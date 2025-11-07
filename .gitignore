@@ -1,4 +1,4 @@
-./.idea/
-./FAT32FS/__pycache__/
+.idea/
+FAT32FS/__pycache__/
 
 my_disk.bin
