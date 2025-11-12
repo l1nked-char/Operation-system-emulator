@@ -917,8 +917,7 @@ class FAT32Formatter:
     @staticmethod
     def pack_time(dt):
         """Упаковка времени в 3 байта"""
-        packed = (dt.hour << 11) | (dt.minute << 5) | dt.second
-        print(packed)
+        packed = (dt.hour << 12) | (dt.minute << 6) | dt.second
         return struct.pack('>I', packed)[1:]
 
     @staticmethod
@@ -926,7 +925,6 @@ class FAT32Formatter:
         """Упаковка даты в 2 байта"""
         year = dt.year - 1980
         packed = (year << 9) | (dt.month << 5) | dt.day
-        print(packed)
         return struct.pack('>H', packed)
 
     @staticmethod
@@ -936,9 +934,9 @@ class FAT32Formatter:
             return "00:00:00"
 
         value = struct.unpack('>I', b'\x00' + packed_time)[0]
-        hour = (value >> 11) & 0x1F
-        minute = (value >> 5) & 0x3F
-        second = (value & 0x3F)
+        hour = (value >> 12) & 0x1F
+        minute = (value >> 6) & 0x3F
+        second = value & 0x3F
         return f"{hour:02d}:{minute:02d}:{second:02d}"
 
     @staticmethod
