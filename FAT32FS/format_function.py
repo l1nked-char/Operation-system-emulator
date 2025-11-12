@@ -5,6 +5,14 @@ from datetime import datetime
 
 
 class FAT32Formatter:
+    # Атрибуты файлов
+    ATTR_READ_ONLY = 0x01
+    ATTR_HIDDEN = 0x02
+    ATTR_SYSTEM = 0x04
+    # ATTR_VOLUME_ID = 0x08
+    # ATTR_DIRECTORY = 0x10
+    # ATTR_ARCHIVE = 0x20
+
     def __init__(self, disk_filename, volume_name, disk_size_gb=1):
 
         self.disk_filename = disk_filename
@@ -22,10 +30,47 @@ class FAT32Formatter:
         self.FAT_CLUSTERS = 256
         self.ROOT_DIR_START_CLUSTER = 257
         self.DATA_START_CLUSTER = 447
+
+        # Размеры записей
         self.FILE_RECORD_SIZE = 41
-        self.OFFSET_TO_FREE_CLUSTER = 24
-        self.OFFSET_TO_FILE_SIZE = 37
+        self.USER_RECORD_SIZE = 64
+        self.GROUP_RECORD_SIZE = 32
         self.PASSWORD_SIZE = 32
+
+        # Смещения в записи файла (41 байт)
+        self.OFFSET_FILENAME = 0  # 20 байт
+        self.OFFSET_ATTRIBUTE = 20  # 1 байт
+        self.OFFSET_CREATE_TIME = 21  # 3 байта
+        self.OFFSET_MODIFY_TIME = 24  # 3 байта
+        self.OFFSET_MODIFY_DATE = 27  # 2 байта
+        self.OFFSET_UID = 29  # 1 байт
+        self.OFFSET_GID = 30  # 1 байт
+        self.OFFSET_PERMISSIONS = 31  # 2 байта
+        self.OFFSET_FILE_SIZE = 33  # 4 байта
+        self.OFFSET_FIRST_CLUSTER = 37  # 4 байта
+
+        # Смещения в записи пользователя (64 байта)
+        self.OFFSET_USER_LOGIN = 0  # 30 байт
+        self.OFFSET_USER_UID = 30  # 1 байт
+        self.OFFSET_USER_GID = 31  # 1 байт
+        self.OFFSET_USER_PASSWORD = 32  # 32 байта
+
+        # Смещения в записи группы (32 байта)
+        self.OFFSET_GROUP_GID = 0  # 1 байт
+        self.OFFSET_GROUP_NAME = 1  # 31 байт
+
+        # Смещения в суперблоке
+        self.OFFSET_SUPERBLOCK_VOLUME_NAME = 0  # 10 байт
+        self.OFFSET_SUPERBLOCK_TOTAL_SECTORS = 10  # 4 байта
+        self.OFFSET_SUPERBLOCK_SECTOR_SIZE = 14  # 2 байта
+        self.OFFSET_SUPERBLOCK_SECTORS_PER_CLUSTER = 16  # 1 байт
+        self.OFFSET_SUPERBLOCK_FAT_COUNT = 17  # 1 байт
+        self.OFFSET_SUPERBLOCK_FAT_CLUSTERS = 18  # 2 байта
+        self.OFFSET_SUPERBLOCK_FREE_CLUSTERS = 20  # 4 байта
+        self.OFFSET_SUPERBLOCK_FIRST_FREE_CLUSTER = 24  # 4 байта
+        self.OFFSET_SUPERBLOCK_ROOT_DIR_CLUSTER = 28  # 4 байта
+        self.OFFSET_SUPERBLOCK_MAX_UID = 32  # 2 байта
+        self.OFFSET_SUPERBLOCK_MAX_GID = 34  # 2 байта
 
         if not os.path.exists(self.disk_filename):
             print(f"Диск {self.disk_filename} не найден. Создаем новый...")
@@ -61,10 +106,10 @@ class FAT32Formatter:
                 disk.seek(self.SUPERBLOCK_CLUSTER * self.CLUSTER_SIZE)
                 superblock = disk.read(self.CLUSTER_SIZE)
 
-                self.volume_name = superblock[0:10].decode('ascii').rstrip('\x00')
-                self.sector_size = struct.unpack('>H', superblock[14:16])[0]
-                self.sectors_per_cluster = superblock[16]
-                self.fat_clusters = struct.unpack('>H', superblock[18:20])[0]
+                self.volume_name = superblock[self.OFFSET_SUPERBLOCK_VOLUME_NAME:self.OFFSET_SUPERBLOCK_VOLUME_NAME + 10].decode('ascii').rstrip('\x00')
+                self.sector_size = struct.unpack('>H', superblock[self.OFFSET_SUPERBLOCK_SECTOR_SIZE:self.OFFSET_SUPERBLOCK_SECTOR_SIZE + 2])[0]
+                self.sectors_per_cluster = superblock[self.OFFSET_SUPERBLOCK_SECTORS_PER_CLUSTER]
+                self.fat_clusters = struct.unpack('>H', superblock[self.OFFSET_SUPERBLOCK_FAT_CLUSTERS:self.OFFSET_SUPERBLOCK_FAT_CLUSTERS + 2])[0]
 
         except Exception as e:
             raise Exception(f"Ошибка загрузки диска: {e}")
@@ -73,28 +118,26 @@ class FAT32Formatter:
         """Создание суперблока"""
         print("Создание суперблока...")
 
-        superblock_data = bytearray()
+        superblock_data = bytearray(self.CLUSTER_SIZE)
 
         # Название ФС (10 байт)
         name = volume_name.ljust(10, '\x00')[:10].encode('ascii')
-        superblock_data.extend(name)
+        superblock_data[self.OFFSET_SUPERBLOCK_VOLUME_NAME:self.OFFSET_SUPERBLOCK_VOLUME_NAME + 10] = name
 
-        # Общее количество секторов (3 байта)
         total_sectors = self.DISK_SIZE // self.SECTOR_SIZE
-        # Размер сектора (2 байта)
-        # Секторов в кластере (1 байт)
         sectors_per_cluster = self.CLUSTER_SIZE // self.SECTOR_SIZE
-        # Количество FAT-таблиц (1 байт)
-        # Размер FAT в кластерах (2 байта)
-        # Количество свободных кластеров (4 байта)
         free_clusters = self.TOTAL_CLUSTERS - (1 + self.FAT_CLUSTERS + self.ROOT_DIR_CLUSTERS)
-        # Первый свободный кластер (4 байта)
-        # Кластер корневой директории (4 байта)
 
-        superblock_data.extend(struct.pack('>IHBBHIII', total_sectors, self.SECTOR_SIZE, sectors_per_cluster, 1,
-                                            self.FAT_CLUSTERS, free_clusters, self.DATA_START_CLUSTER, self.ROOT_DIR_START_CLUSTER))
-
-        superblock_data.extend(bytearray(self.CLUSTER_SIZE - len(superblock_data))) # должно быть 4096 - 31
+        struct.pack_into('>I', superblock_data, self.OFFSET_SUPERBLOCK_TOTAL_SECTORS, total_sectors)
+        struct.pack_into('>H', superblock_data, self.OFFSET_SUPERBLOCK_SECTOR_SIZE, self.SECTOR_SIZE)
+        struct.pack_into('>B', superblock_data, self.OFFSET_SUPERBLOCK_SECTORS_PER_CLUSTER, sectors_per_cluster)
+        struct.pack_into('>B', superblock_data, self.OFFSET_SUPERBLOCK_FAT_COUNT, 1)
+        struct.pack_into('>H', superblock_data, self.OFFSET_SUPERBLOCK_FAT_CLUSTERS, self.FAT_CLUSTERS)
+        struct.pack_into('>I', superblock_data, self.OFFSET_SUPERBLOCK_FREE_CLUSTERS, free_clusters)
+        struct.pack_into('>I', superblock_data, self.OFFSET_SUPERBLOCK_FIRST_FREE_CLUSTER, self.DATA_START_CLUSTER)
+        struct.pack_into('>I', superblock_data, self.OFFSET_SUPERBLOCK_ROOT_DIR_CLUSTER, self.ROOT_DIR_START_CLUSTER)
+        struct.pack_into('>H', superblock_data, self.OFFSET_SUPERBLOCK_MAX_UID, 0)  # root user
+        struct.pack_into('>H', superblock_data, self.OFFSET_SUPERBLOCK_MAX_GID, 0)  # root group
 
         with open(self.disk_filename, 'r+b') as disk:
             disk.seek(self.SUPERBLOCK_CLUSTER * self.CLUSTER_SIZE)
@@ -157,11 +200,13 @@ class FAT32Formatter:
         """Создание системных файлов"""
         print("Создание системных файлов...")
 
-        if not self.create_file("users", 0, 0):
+        system_attrs = self.ATTR_SYSTEM | self.ATTR_HIDDEN | self.ATTR_READ_ONLY
+
+        if not self.create_file("users", 0, 0, attributes=system_attrs):
             print("Ошибка создания файла users")
             return
 
-        if not self.create_file("groups", 0, 0):
+        if not self.create_file("groups", 0, 0, attributes=system_attrs):
             print("Ошибка создания файла groups")
             return
 
@@ -175,15 +220,13 @@ class FAT32Formatter:
     def write_initial_users(self) -> bool:
         """Запись начальных данных в файл users - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
         try:
-            user_data = bytearray()
+            user_data = bytearray(self.USER_RECORD_SIZE)
 
             login = "root".ljust(30, '\x00')[:30].encode('ascii')
-            user_data.extend(login)
-
-            user_data.append(0)
-            user_data.append(0)
-
-            user_data.extend(b'\x00' * self.PASSWORD_SIZE)
+            user_data[self.OFFSET_USER_LOGIN:self.OFFSET_USER_LOGIN + 30] = login
+            user_data[self.OFFSET_USER_UID] = 0
+            user_data[self.OFFSET_USER_GID] = 0
+            user_data[self.OFFSET_USER_PASSWORD:self.OFFSET_USER_PASSWORD + self.PASSWORD_SIZE] = b'\x00' * self.PASSWORD_SIZE
 
             return self.write_file("users", user_data, overwrite=True, uid=0, gid=0)
         except Exception as e:
@@ -193,12 +236,10 @@ class FAT32Formatter:
     def write_initial_groups(self) -> bool:
         """Запись начальных данных в файл groups - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
         try:
-            group_data = bytearray()
-
-            group_data.append(0)
-
+            group_data = bytearray(self.GROUP_RECORD_SIZE)
+            group_data[self.OFFSET_GROUP_GID] = 0
             group_name = "root".ljust(31, '\x00')[:31].encode('ascii')
-            group_data.extend(group_name)
+            group_data[self.OFFSET_GROUP_NAME:self.OFFSET_GROUP_NAME + 31] = group_name
 
             return self.write_file("groups", group_data, overwrite=True, uid=0, gid=0)
         except Exception as e:
@@ -228,7 +269,7 @@ class FAT32Formatter:
                     current_name = current_entry[0:20].decode('ascii', errors='ignore').rstrip('\x00')
                     if current_name == filename:
                         # Обновляем размер файла
-                        disk.seek(entry_offset + self.OFFSET_TO_FILE_SIZE)
+                        disk.seek(entry_offset + self.OFFSET_FILE_SIZE)
                         disk.write(struct.pack('>I', new_size))
                         return True
 
@@ -243,17 +284,16 @@ class FAT32Formatter:
 
             users = []
 
-            # Парсим записи пользователей (каждая по 64 байта)
-            for i in range(0, len(data), 64):
-                if i + 64 > len(data):
+            for i in range(0, len(data), self.USER_RECORD_SIZE):
+                if i + self.USER_RECORD_SIZE > len(data):
                     break
 
-                user_data = data[i:i + 64]
+                user_data = data[i:i + self.USER_RECORD_SIZE]
 
-                login = user_data[0:30].decode('ascii', errors='ignore').rstrip('\x00')
-                uid = user_data[30]
-                gid = user_data[31]
-                password_hash = user_data[32:64]
+                login = user_data[self.OFFSET_USER_LOGIN:self.OFFSET_USER_LOGIN + 30].decode('ascii', errors='ignore').rstrip('\x00')
+                uid = user_data[self.OFFSET_USER_UID]
+                gid = user_data[self.OFFSET_USER_GID]
+                password_hash = user_data[self.OFFSET_USER_PASSWORD:self.OFFSET_USER_PASSWORD + self.PASSWORD_SIZE]
 
                 if login:
                     users.append({
@@ -274,19 +314,16 @@ class FAT32Formatter:
             data = bytearray()
 
             for user in users_data:
-                # Логин (30 байт) - смещение 0-29
+                user_record = bytearray(self.USER_RECORD_SIZE)
                 login_bytes = user['login'].ljust(30, '\x00')[:30].encode('ascii')
-                data.extend(login_bytes)
-
-                # UID и GID (по 1 байту) - правильные смещения!
-                data.append(user['uid'])  # смещение 30
-                data.append(user['gid'])  # смещение 31
-
-                # Хэш пароля (32 байта) - смещение 32-63
+                user_record[self.OFFSET_USER_LOGIN:self.OFFSET_USER_LOGIN + 30] = login_bytes
+                user_record[self.OFFSET_USER_UID] = user['uid']
+                user_record[self.OFFSET_USER_GID] = user['gid']
                 password_hash = user['password_hash']
                 if isinstance(password_hash, str):
                     password_hash = password_hash.encode('ascii')
-                data.extend(password_hash.ljust(32, b'\x00')[:32])
+                user_record[self.OFFSET_USER_PASSWORD:self.OFFSET_USER_PASSWORD + self.PASSWORD_SIZE] = password_hash.ljust(self.PASSWORD_SIZE, b'\x00')[:self.PASSWORD_SIZE]
+                data.extend(user_record)
 
             # Записываем в файл users
             self.write_file("users", data, overwrite=True, uid=0, gid=0)
@@ -302,14 +339,14 @@ class FAT32Formatter:
 
             groups = []
 
-            for i in range(0, len(data), 32):
-                if i + 32 > len(data):
+            for i in range(0, len(data), self.GROUP_RECORD_SIZE):
+                if i + self.GROUP_RECORD_SIZE > len(data):
                     break
 
-                group_data = data[i:i + 32]
+                group_data = data[i:i + self.GROUP_RECORD_SIZE]
 
-                gid = group_data[0]
-                name = group_data[1:32].decode('ascii', errors='ignore').rstrip('\x00')  # Смещение 1-31
+                gid = group_data[self.OFFSET_GROUP_GID]
+                name = group_data[self.OFFSET_GROUP_NAME:self.OFFSET_GROUP_NAME + 31].decode('ascii', errors='ignore').rstrip('\x00')
 
                 if name:
                     groups.append({
@@ -418,9 +455,9 @@ class FAT32Formatter:
             raise FileNotFoundError(f"Файл не найден: {filename}")
 
         with open(self.disk_filename, 'r+b') as disk:
-            disk.seek(entry_offset + 29)  # смещение до uid
+            disk.seek(entry_offset + self.OFFSET_UID)
             disk.write(bytes([new_uid]))
-            disk.seek(entry_offset + 30)  # смещение до gid
+            disk.seek(entry_offset + self.OFFSET_GID)
             disk.write(bytes([new_gid]))
 
         return True
@@ -442,25 +479,25 @@ class FAT32Formatter:
                     if len(entry_data) < self.FILE_RECORD_SIZE:
                         continue
 
-                    first_byte = entry_data[0]
+                    first_byte = entry_data[self.OFFSET_FILENAME]
                     if first_byte == 0x00:
                         break
                     if first_byte == 0xE5:
                         continue
 
-                    filename = entry_data[0:20].decode('ascii', errors='ignore').rstrip('\x00')
-                    attributes = entry_data[20]
+                    filename = entry_data[self.OFFSET_FILENAME:self.OFFSET_FILENAME + 20].decode('ascii', errors='ignore').rstrip('\x00')
+                    attributes = entry_data[self.OFFSET_ATTRIBUTE]
 
                     # Извлекаем время и дату
-                    create_time = self.unpack_time(entry_data[21:24])
-                    modify_time = self.unpack_time(entry_data[24:27])
-                    modify_date = self.unpack_date(entry_data[27:29])
+                    create_time = self.unpack_time(entry_data[self.OFFSET_CREATE_TIME:self.OFFSET_CREATE_TIME + 3])
+                    modify_time = self.unpack_time(entry_data[self.OFFSET_MODIFY_TIME:self.OFFSET_MODIFY_TIME + 3])
+                    modify_date = self.unpack_date(entry_data[self.OFFSET_MODIFY_DATE:self.OFFSET_MODIFY_DATE + 2])
 
-                    uid = entry_data[29]
-                    gid = entry_data[30]
-                    permissions = struct.unpack('>H', entry_data[31:33])[0]
-                    file_size = struct.unpack('>I', entry_data[33:37])[0]
-                    first_cluster = struct.unpack('>I', entry_data[37:41])[0]
+                    uid = entry_data[self.OFFSET_UID]
+                    gid = entry_data[self.OFFSET_GID]
+                    permissions = struct.unpack('>H', entry_data[self.OFFSET_PERMISSIONS:self.OFFSET_PERMISSIONS + 2])[0]
+                    file_size = struct.unpack('>I', entry_data[self.OFFSET_FILE_SIZE:self.OFFSET_FILE_SIZE + 4])[0]
+                    first_cluster = struct.unpack('>I', entry_data[self.OFFSET_FIRST_CLUSTER:self.OFFSET_FIRST_CLUSTER + 4])[0]
 
                     if filename in ['users', 'groups']:
                         continue
@@ -475,12 +512,13 @@ class FAT32Formatter:
                             'cluster': first_cluster,
                             'create_time': create_time,
                             'modify_time': modify_time,
-                            'modify_date': modify_date
+                            'modify_date': modify_date,
+                            'attributes': attributes
                         })
 
         return files
 
-    def create_file(self, filename: str, uid: int, gid: int) -> bool:
+    def create_file(self, filename: str, uid: int, gid: int, attributes: int = 0x20) -> bool:
         """Создание нового файла"""
         if len(filename) > 20:
             raise ValueError("Имя файла слишком длинное (макс. 20 символов)")
@@ -492,7 +530,7 @@ class FAT32Formatter:
         if entry_offset == -1:
             raise Exception("Нет места в директории")
 
-        file_entry = self.create_file_entry(filename, uid, gid)
+        file_entry = self.create_file_entry(filename, uid, gid, attributes)
 
         with open(self.disk_filename, 'r+b') as disk:
             disk.seek(entry_offset)
@@ -506,8 +544,8 @@ class FAT32Formatter:
         if not file_entry:
             raise FileNotFoundError(f"Файл не найден: {filename}")
 
-        file_size = struct.unpack('>I', file_entry[33:37])[0]
-        first_cluster = struct.unpack('>I', file_entry[37:41])[0]
+        file_size = struct.unpack('>I', file_entry[self.OFFSET_FILE_SIZE:self.OFFSET_FILE_SIZE + 4])[0]
+        first_cluster = struct.unpack('>I', file_entry[self.OFFSET_FIRST_CLUSTER:self.OFFSET_FIRST_CLUSTER + 4])[0]
 
         if first_cluster == 0 or file_size == 0:
             return b""
@@ -516,25 +554,25 @@ class FAT32Formatter:
 
     def write_file(self, filename: str, content: str or bytearray,
                         append: bool=False, overwrite: bool=False,
-                        uid: int=None, gid:int=None) -> bool:
+                        uid: int=None, gid:int=None, attributes: int = 0x20) -> bool:
         """Запись в файл"""
         content_bytes: bytearray = content.encode('ascii') if isinstance(content, str) else content
 
         if overwrite:
             # Удаляем и создаем заново
             self.delete_file(filename)
-            self.create_file(filename, uid, gid)
+            self.create_file(filename, uid, gid, attributes)
 
         file_entry: bytes = self.find_file_entry(filename)
         if not file_entry:
             if uid is None or gid is None:
                 raise ValueError("Для создания файла требуется uid и gid")
-            self.create_file(filename, uid, gid)
+            self.create_file(filename, uid, gid, attributes)
             file_entry: bytes = self.find_file_entry(filename)
 
-        old_size: int = struct.unpack('>I', file_entry[33:37])[0] if not append else \
-                   struct.unpack('>I', file_entry[33:37])[0]
-        first_cluster: int = struct.unpack('>I', file_entry[37:41])[0]
+        old_size: int = struct.unpack('>I', file_entry[self.OFFSET_FILE_SIZE:self.OFFSET_FILE_SIZE + 4])[0] if not append else \
+                   struct.unpack('>I', file_entry[self.OFFSET_FILE_SIZE:self.OFFSET_FILE_SIZE + 4])[0]
+        first_cluster: int = struct.unpack('>I', file_entry[self.OFFSET_FIRST_CLUSTER:self.OFFSET_FIRST_CLUSTER + 4])[0]
 
         if append and first_cluster != 0:
             old_data: bytearray = self.read_file_data(first_cluster, old_size)
@@ -568,7 +606,7 @@ class FAT32Formatter:
             disk.seek(file_entry_offset)
             disk.write(b'\xE5')
 
-        first_cluster: int = struct.unpack('>I', file_entry[37:41])[0]
+        first_cluster: int = struct.unpack('>I', file_entry[self.OFFSET_FIRST_CLUSTER:self.OFFSET_FIRST_CLUSTER + 4])[0]
         if first_cluster != 0:
             self.free_cluster_chain(first_cluster)
 
@@ -589,7 +627,7 @@ class FAT32Formatter:
             raise ValueError("Неверный формат прав доступа")
 
         with open(self.disk_filename, 'r+b') as disk:
-            disk.seek(entry_offset + 31)
+            disk.seek(entry_offset + self.OFFSET_PERMISSIONS)
             disk.write(struct.pack('>H', mode_int))
 
         return True
@@ -624,27 +662,24 @@ class FAT32Formatter:
             'volume_name': self.volume_name
         }
 
-    def create_file_entry(self, filename: str, uid: int, gid: int):
+    def create_file_entry(self, filename: str, uid: int, gid: int, attributes: int = 0x20):
         """Создание структуры записи файла"""
-        file_entry = bytearray()
+        file_entry = bytearray(self.FILE_RECORD_SIZE)
 
         name_bytes = filename.ljust(20, '\x00')[:20].encode('ascii')
-        file_entry.extend(name_bytes)
-        file_entry.append(0x20)
+        file_entry[self.OFFSET_FILENAME:self.OFFSET_FILENAME + 20] = name_bytes
+        file_entry[self.OFFSET_ATTRIBUTE] = attributes
 
         now = datetime.now()
-        create_time = self.pack_time(now)
-        file_entry.extend(create_time)
-        update_time = self.pack_time(now)
-        file_entry.extend(update_time)
-        update_date = self.pack_date(now)
-        file_entry.extend(update_date)
+        file_entry[self.OFFSET_CREATE_TIME:self.OFFSET_CREATE_TIME + 3] = self.pack_time(now)
+        file_entry[self.OFFSET_MODIFY_TIME:self.OFFSET_MODIFY_TIME + 3] = self.pack_time(now)
+        file_entry[self.OFFSET_MODIFY_DATE:self.OFFSET_MODIFY_DATE + 2] = self.pack_date(now)
 
-        file_entry.append(uid)
-        file_entry.append(gid)
-        file_entry.extend(struct.pack('>H', 0o644))
-        file_entry.extend(struct.pack('>I', 0))
-        file_entry.extend(struct.pack('>I', 0))
+        file_entry[self.OFFSET_UID] = uid
+        file_entry[self.OFFSET_GID] = gid
+        struct.pack_into('>H', file_entry, self.OFFSET_PERMISSIONS, 0o644)
+        struct.pack_into('>I', file_entry, self.OFFSET_FILE_SIZE, 0)
+        struct.pack_into('>I', file_entry, self.OFFSET_FIRST_CLUSTER, 0)
 
         return file_entry
 
@@ -802,14 +837,14 @@ class FAT32Formatter:
 
             entry_data = bytearray(disk.read(self.FILE_RECORD_SIZE))
 
-            entry_data[33:37] = struct.pack('>I', new_size)
+            struct.pack_into('>I', entry_data, self.OFFSET_FILE_SIZE, new_size)
 
             if first_cluster:
-                entry_data[37:41] = struct.pack('>I', first_cluster)
+                struct.pack_into('>I', entry_data, self.OFFSET_FIRST_CLUSTER, first_cluster)
 
             now = datetime.now()
-            entry_data[24:27] = self.pack_time(now)
-            entry_data[30:32] = self.pack_date(now)
+            entry_data[self.OFFSET_MODIFY_TIME:self.OFFSET_MODIFY_TIME + 3] = self.pack_time(now)
+            entry_data[self.OFFSET_MODIFY_DATE:self.OFFSET_MODIFY_DATE + 2] = self.pack_date(now)
 
             disk.seek(entry_offset)
             disk.write(entry_data)
@@ -827,11 +862,8 @@ class FAT32Formatter:
 
         # Определяем UID если не указан
         if uid is None:
-            max_uid = 0
-            for user in users:
-                if max_uid < user['uid'] < 1000:
-                    max_uid = user['uid']
-            uid = max_uid + 1
+            uid = self.get_max_uid() + 1
+            self.set_max_uid(uid)
 
         # Хэшируем пароль
         password_hash = hashlib.sha256(password.encode()).digest()
@@ -850,41 +882,34 @@ class FAT32Formatter:
 
     def add_group(self, group_name: str, gid: int = None) -> bool:
         """Добавление новой группы"""
-        groups_data = self.read_file("groups")
-        groups = []
+        try:
+            groups = self.read_groups_file()
 
-        # Парсим существующие группы
-        for i in range(0, len(groups_data), 32):
-            if i + 32 <= len(groups_data):
-                gid_existing = groups_data[i]
-                name = groups_data[i + 1:i + 32].decode('ascii', errors='ignore').rstrip('\x00')
-                if name:
-                    groups.append({'gid': gid_existing, 'name': name})
-
-        # Проверяем, не существует ли группа
-        for group in groups:
-            if group['name'] == group_name:
-                raise ValueError(f"Группа {group_name} уже существует")
-
-        # Определяем GID если не указан
-        if gid is None:
-            max_gid = 99
+            # Проверяем, не существует ли группа
             for group in groups:
-                if max_gid < group['gid'] < 1000:
-                    max_gid = group['gid']
-            gid = max_gid + 1
+                if group['name'] == group_name:
+                    raise ValueError(f"Группа {group_name} уже существует")
 
-        # Создаем запись группы
-        group_data = bytearray()
-        group_data.append(gid)
-        group_data.extend(group_name.ljust(31, '\x00')[:31].encode('ascii'))
+            # Определяем GID если не указан
+            if gid is None:
+                gid = self.get_max_gid() + 1
+                self.set_max_gid(gid)
 
-        # Добавляем к существующим данным
-        new_groups_data = groups_data + group_data
+            # Создаем запись группы
+            group_data = bytearray(self.GROUP_RECORD_SIZE)
+            group_data[self.OFFSET_GROUP_GID] = gid
+            group_data[self.OFFSET_GROUP_NAME:self.OFFSET_GROUP_NAME + 31] = group_name.ljust(31, '\x00')[:31].encode('ascii')
 
-        # Записываем обновленный файл
-        self.write_file("groups", new_groups_data, overwrite=True, uid=0, gid=0)
-        return True
+            # Добавляем к существующим данным
+            existing_data = self.read_file("groups")
+            new_groups_data = existing_data + group_data
+
+            # Записываем обновленный файл
+            self.write_file("groups", new_groups_data, overwrite=True, uid=0, gid=0)
+            return True
+        except Exception as e:
+            print(f"Ошибка добавления группы: {e}")
+            return False
 
     def get_regular_users(self):
         """Получение списка обычных пользователей (не root)"""
@@ -950,6 +975,49 @@ class FAT32Formatter:
         month = (value >> 5) & 0x0F  # 4 бита
         day = value & 0x1F  # 5 бит
         return f"{year:04d}-{month:02d}-{day:02d}"
+
+    def rename_file(self, old_filename: str, new_filename: str) -> bool:
+        """Переименование файла"""
+        if len(new_filename) > 20:
+            raise ValueError("Новое имя файла слишком длинное (макс. 20 символов)")
+
+        entry_offset = self.find_file_entry(old_filename, is_offset_needed=True)
+        if not entry_offset:
+            raise FileNotFoundError(f"Файл не найден: {old_filename}")
+
+        if self.find_file_entry(new_filename):
+            raise ValueError(f"Файл с именем {new_filename} уже существует")
+
+        with open(self.disk_filename, 'r+b') as disk:
+            disk.seek(entry_offset + self.OFFSET_FILENAME)
+            name_bytes = new_filename.ljust(20, '\x00')[:20].encode('ascii')
+            disk.write(name_bytes)
+
+        return True
+
+    def get_max_uid(self) -> int:
+        """Получение максимального UID из суперблока"""
+        with open(self.disk_filename, 'rb') as disk:
+            disk.seek(self.SUPERBLOCK_CLUSTER * self.CLUSTER_SIZE + self.OFFSET_SUPERBLOCK_MAX_UID)
+            return struct.unpack('>H', disk.read(2))[0]
+
+    def set_max_uid(self, uid: int) -> None:
+        """Запись максимального UID в суперблок"""
+        with open(self.disk_filename, 'r+b') as disk:
+            disk.seek(self.SUPERBLOCK_CLUSTER * self.CLUSTER_SIZE + self.OFFSET_SUPERBLOCK_MAX_UID)
+            disk.write(struct.pack('>H', uid))
+
+    def get_max_gid(self) -> int:
+        """Получение максимального GID из суперблока"""
+        with open(self.disk_filename, 'rb') as disk:
+            disk.seek(self.SUPERBLOCK_CLUSTER * self.CLUSTER_SIZE + self.OFFSET_SUPERBLOCK_MAX_GID)
+            return struct.unpack('>H', disk.read(2))[0]
+
+    def set_max_gid(self, gid: int) -> None:
+        """Запись максимального GID в суперблок"""
+        with open(self.disk_filename, 'r+b') as disk:
+            disk.seek(self.SUPERBLOCK_CLUSTER * self.CLUSTER_SIZE + self.OFFSET_SUPERBLOCK_MAX_GID)
+            disk.write(struct.pack('>H', gid))
 
     @staticmethod
     def format_permissions(permissions):

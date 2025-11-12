@@ -213,10 +213,14 @@ class FAT32Emulator:
                 self.do_passwd()
             elif cmd == "useradd" and args:
                 self.do_useradd(args)
+            elif cmd == "groupadd" and args:
+                self.do_groupadd(args)
             elif cmd == "users":
                 self.do_users()
             elif cmd == "login":
                 return self.do_login()
+            elif cmd == "mv" and len(args) >= 2:
+                self.do_mv(args[0], args[1])
             elif cmd == "exit" or cmd == "quit":
                 return False
             else:
@@ -280,7 +284,6 @@ class FAT32Emulator:
         username = args[0]
 
         try:
-            # Запрашиваем пароль
             password = getpass.getpass(f"Введите пароль для {username}: ")
             confirm = getpass.getpass("Подтвердите пароль: ")
 
@@ -293,6 +296,40 @@ class FAT32Emulator:
 
         except Exception as e:
             print(f"Ошибка создания пользователя: {e}")
+
+    def do_groupadd(self, args):
+        """Команда groupadd - добавление группы"""
+        if self.current_uid != 0 and not self.sudo_mode:
+            print("Ошибка: недостаточно прав. Только root может создавать группы.")
+            return
+
+        if len(args) < 1:
+            print("Использование: groupadd <имя_группы>")
+            return
+
+        group_name = args[0]
+
+        try:
+            self.fs.add_group(group_name)
+            print(f"Группа {group_name} успешно создана!")
+        except Exception as e:
+            print(f"Ошибка создания группы: {e}")
+
+    def do_mv(self, old_filename: str, new_filename: str) -> None:
+        """Команда mv - переименование файла"""
+        file_entry = self.fs.find_file_entry(old_filename)
+        if not file_entry:
+            raise FileNotFoundError(f"Файл не найден: {old_filename}")
+
+        file_uid = file_entry[self.fs.OFFSET_UID]
+        if self.current_uid != file_uid and self.current_uid != 0 and not self.sudo_mode:
+            raise PermissionError("Недостаточно прав для переименования файла")
+
+        try:
+            self.fs.rename_file(old_filename, new_filename)
+            print(f"Файл '{old_filename}' переименован в '{new_filename}'")
+        except Exception as e:
+            print(f"Ошибка переименования файла: {e}")
 
     def do_users(self):
         """Команда users - список пользователей"""
@@ -329,10 +366,10 @@ class FAT32Emulator:
         users = self.fs.read_users_file()
 
         print("Содержимое корневой директории:")
-        print("{:<20} {:<8} {:<8} {:<10} {:<12} {:<10}".format(
-            "Имя", "Размер", "Владелец", "Права", "Дата", "Время"
+        print("{:<20} {:<8} {:<8} {:<10} {:<12} {:<10} {:<8}".format(
+            "Имя", "Размер", "Владелец", "Права", "Дата", "Время", "Attrs"
         ))
-        print("-" * 80)
+        print("-" * 88)
 
         if not files:
             print("Директория пуста")
@@ -346,14 +383,16 @@ class FAT32Emulator:
                     break
 
             perm_str = self.fs.format_permissions(file_info['permissions'])
+            attr_str = self.format_attributes(file_info['attributes'])
 
-            print("{:<20} {:<8} {:<8} {:<10} {:<12} {:<10}".format(
+            print("{:<20} {:<8} {:<8} {:<10} {:<12} {:<10} {:<8}".format(
                 file_info['name'],
                 file_info['size'],
                 owner_name,
                 perm_str,
                 file_info['modify_date'],
-                file_info['modify_time']
+                file_info['modify_time'],
+                attr_str
             ))
 
     def do_chown(self, filename: str, owner_str: str) -> None:
@@ -523,6 +562,22 @@ class FAT32Emulator:
         print(f"Использование: {usage_percent:.1f}%")
 
     @staticmethod
+    def format_attributes(attributes: int) -> str:
+        """Форматирование атрибутов файла в строку"""
+        attr_str = ''
+        if attributes & FAT32Formatter.ATTR_READ_ONLY:
+            attr_str += 'R'
+        if attributes & FAT32Formatter.ATTR_HIDDEN:
+            attr_str += 'H'
+        if attributes & FAT32Formatter.ATTR_SYSTEM:
+            attr_str += 'S'
+        # if attributes & FAT32Formatter.ATTR_DIRECTORY:
+        #     attr_str += 'D'
+        # if attributes & FAT32Formatter.ATTR_ARCHIVE:
+        #     attr_str += 'A'
+        return attr_str.ljust(5, '-')
+
+    @staticmethod
     def do_clear():
         """Команда clear - очистка экрана"""
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -578,8 +633,10 @@ class FAT32Emulator:
         print("  whoami                - информация о текущем пользователе")
         print("  passwd                - сменить пароль")
         print("  useradd <user>        - добавить пользователя (только root)")
+        print("  groupadd <group>      - добавить группу (только root)")
         print("  users                 - список пользователей")
         print("  login                 - сменить пользователя")
+        print("  mv <old_file> <new_file> - переименовать файл")
         print("  sudo <command>        - выполнить команду как root")
         print("  clear                 - очистить экран")
         print("  exit/quit             - выход")
