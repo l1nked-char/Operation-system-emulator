@@ -1,5 +1,6 @@
 import os
 import getpass
+import readline
 from FAT32FS.format_function import FAT32Formatter
 from FAT32FS.permissions import PermissionChecker
 
@@ -434,7 +435,7 @@ class FAT32Emulator:
                         group_entry = groups_data[i:i + 32]
                         if len(group_entry) >= 32:
                             gid = group_entry[0]
-                            group_name = group_entry[1:32].decode('ascii', errors='ignore').rstrip('\x00')
+                            group_name = group_entry[1:32].decode('utf-8', errors='ignore').rstrip('\x00')
                             if group_name == group_part:
                                 new_gid = gid
                                 break
@@ -467,7 +468,7 @@ class FAT32Emulator:
             raise PermissionError("Недостаточно прав для чтения файла")
 
         data = self.fs.read_file(filename)
-        print(data.decode('ascii', errors='ignore'))
+        print(data.decode('utf-8', errors='ignore'))
 
     def do_cat_write(self, filename, append=False):
         """Команда cat > filename - многострочная запись в файл с проверкой прав"""
@@ -641,13 +642,6 @@ class FAT32Emulator:
         print("  clear                 - очистить экран")
         print("  exit/quit             - выход")
 
-    def get_prompt(self):
-        """Получение приглашения командной строки"""
-        if self.sudo_mode:
-            return f"[sudo] {self.current_user}@myfs:~$ "
-        else:
-            return f"{self.current_user}@myfs:~$ "
-
 
 def main():
     """Главная функция эмулятора"""
@@ -658,6 +652,9 @@ def main():
 
     formatter = FAT32Formatter(disk_file, "MYVOLUME", disk_size_gb=1)
     emulator = FAT32Emulator(disk_file, formatter)
+
+    readline.set_history_length(1000)
+    readline.parse_and_bind('tab: complete')
 
     # Проходим аутентификацию
     if not emulator.authenticate():
@@ -670,8 +667,8 @@ def main():
     # Основной цикл команд
     while True:
         try:
-            prompt = emulator.get_prompt()
-            command = input(prompt).strip()
+            #prompt = emulator.get_prompt()
+            command = input(f"{emulator.current_user}@myfs:~$ ").strip().lower()
 
             if command == "help":
                 emulator.show_help()

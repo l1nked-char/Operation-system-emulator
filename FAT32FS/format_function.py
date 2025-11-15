@@ -32,22 +32,22 @@ class FAT32Formatter:
         self.DATA_START_CLUSTER = 447
 
         # Размеры записей
-        self.FILE_RECORD_SIZE = 41
+        self.FILE_RECORD_SIZE = 61
         self.USER_RECORD_SIZE = 64
         self.GROUP_RECORD_SIZE = 32
         self.PASSWORD_SIZE = 32
 
-        # Смещения в записи файла (41 байт)
-        self.OFFSET_FILENAME = 0  # 20 байт
-        self.OFFSET_ATTRIBUTE = 20  # 1 байт
-        self.OFFSET_CREATE_TIME = 21  # 3 байта
-        self.OFFSET_MODIFY_TIME = 24  # 3 байта
-        self.OFFSET_MODIFY_DATE = 27  # 2 байта
-        self.OFFSET_UID = 29  # 1 байт
-        self.OFFSET_GID = 30  # 1 байт
-        self.OFFSET_PERMISSIONS = 31  # 2 байта
-        self.OFFSET_FILE_SIZE = 33  # 4 байта
-        self.OFFSET_FIRST_CLUSTER = 37  # 4 байта
+        # Смещения в записи файла (61 байт)
+        self.OFFSET_FILENAME = 0  # 40 байт
+        self.OFFSET_ATTRIBUTE = 40  # 1 байт
+        self.OFFSET_CREATE_TIME = 41  # 3 байта
+        self.OFFSET_MODIFY_TIME = 44  # 3 байта
+        self.OFFSET_MODIFY_DATE = 47  # 2 байта
+        self.OFFSET_UID = 49  # 1 байт
+        self.OFFSET_GID = 50  # 1 байт
+        self.OFFSET_PERMISSIONS = 51  # 2 байта
+        self.OFFSET_FILE_SIZE = 53  # 4 байта
+        self.OFFSET_FIRST_CLUSTER = 57  # 4 байта
 
         # Смещения в записи пользователя (64 байта)
         self.OFFSET_USER_LOGIN = 0  # 30 байт
@@ -82,12 +82,9 @@ class FAT32Formatter:
         print(f"Форматирование диска {self.disk_filename}...")
 
         try:
-            # Создаем файл-диск
             with open(self.disk_filename, 'wb') as disk:
-                # Инициализируем весь диск нулями
                 disk.write(b'\x00' * self.DISK_SIZE)
 
-            # Создаем структуры файловой системы
             self.create_superblock(volume_name)
             self.create_fat_table()
             self.create_root_directory()
@@ -120,7 +117,6 @@ class FAT32Formatter:
 
         superblock_data = bytearray(self.CLUSTER_SIZE)
 
-        # Название ФС (10 байт)
         name = volume_name.ljust(10, '\x00')[:10].encode('ascii')
         superblock_data[self.OFFSET_SUPERBLOCK_VOLUME_NAME:self.OFFSET_SUPERBLOCK_VOLUME_NAME + 10] = name
 
@@ -149,11 +145,9 @@ class FAT32Formatter:
 
         fat_entries = [0] * self.TOTAL_CLUSTERS
 
-        # FAT-таблица пустая
         for i in range(self.FAT_START_CLUSTER, self.TOTAL_CLUSTERS):
             fat_entries[i] = 0x00000000
 
-        # Конвертируем в байты и записываем
         fat_data = bytearray()
         for entry in fat_entries:
             fat_data.extend(struct.pack('>I', entry))
@@ -163,12 +157,10 @@ class FAT32Formatter:
                 cluster_offset = cluster * self.CLUSTER_SIZE
                 disk.seek(cluster_offset)
 
-                # Вычисляем часть FAT для этого кластера
                 start_idx = (cluster - self.FAT_START_CLUSTER) * (self.CLUSTER_SIZE // 4)
                 end_idx = start_idx + (self.CLUSTER_SIZE // 4)
                 cluster_data = fat_data[start_idx * 4:end_idx * 4]
 
-                # Дополняем до размера кластера если нужно
                 if len(cluster_data) < self.CLUSTER_SIZE:
                     cluster_data += b'\x00' * (self.CLUSTER_SIZE - len(cluster_data))
 
@@ -218,11 +210,11 @@ class FAT32Formatter:
             return
 
     def write_initial_users(self) -> bool:
-        """Запись начальных данных в файл users - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
+        """Запись начальных данных в файл users"""
         try:
             user_data = bytearray(self.USER_RECORD_SIZE)
 
-            login = "root".ljust(30, '\x00')[:30].encode('ascii')
+            login = "root".ljust(30, '\x00')[:30].encode('utf-8')
             user_data[self.OFFSET_USER_LOGIN:self.OFFSET_USER_LOGIN + 30] = login
             user_data[self.OFFSET_USER_UID] = 0
             user_data[self.OFFSET_USER_GID] = 0
@@ -234,11 +226,11 @@ class FAT32Formatter:
             return False
 
     def write_initial_groups(self) -> bool:
-        """Запись начальных данных в файл groups - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
+        """Запись начальных данных в файл groups"""
         try:
             group_data = bytearray(self.GROUP_RECORD_SIZE)
             group_data[self.OFFSET_GROUP_GID] = 0
-            group_name = "root".ljust(31, '\x00')[:31].encode('ascii')
+            group_name = "root".ljust(31, '\x00')[:31].encode('utf-8')
             group_data[self.OFFSET_GROUP_NAME:self.OFFSET_GROUP_NAME + 31] = group_name
 
             return self.write_file("groups", group_data, overwrite=True, uid=0, gid=0)
@@ -266,7 +258,7 @@ class FAT32Formatter:
                     if len(current_entry) < self.FILE_RECORD_SIZE:
                         continue
 
-                    current_name = current_entry[0:20].decode('ascii', errors='ignore').rstrip('\x00')
+                    current_name = current_entry[self.OFFSET_FILENAME:self.OFFSET_ATTRIBUTE].decode('utf-8', errors='ignore').rstrip('\x00')
                     if current_name == filename:
                         # Обновляем размер файла
                         disk.seek(entry_offset + self.OFFSET_FILE_SIZE)
@@ -276,7 +268,7 @@ class FAT32Formatter:
         return False
 
     def read_users_file(self) -> list:
-        """Чтение файла пользователей - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
+        """Чтение файла пользователей"""
         try:
             data = self.read_file("users")
             if not data:
@@ -290,7 +282,7 @@ class FAT32Formatter:
 
                 user_data = data[i:i + self.USER_RECORD_SIZE]
 
-                login = user_data[self.OFFSET_USER_LOGIN:self.OFFSET_USER_LOGIN + 30].decode('ascii', errors='ignore').rstrip('\x00')
+                login = user_data[self.OFFSET_USER_LOGIN:self.OFFSET_USER_LOGIN + 30].decode('utf-8', errors='ignore').rstrip('\x00')
                 uid = user_data[self.OFFSET_USER_UID]
                 gid = user_data[self.OFFSET_USER_GID]
                 password_hash = user_data[self.OFFSET_USER_PASSWORD:self.OFFSET_USER_PASSWORD + self.PASSWORD_SIZE]
@@ -309,19 +301,19 @@ class FAT32Formatter:
             return []
 
     def write_users_file(self, users_data: list) -> None:
-        """Запись файла пользователей - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
+        """Запись файла пользователей"""
         try:
             data = bytearray()
 
             for user in users_data:
                 user_record = bytearray(self.USER_RECORD_SIZE)
-                login_bytes = user['login'].ljust(30, '\x00')[:30].encode('ascii')
+                login_bytes = user['login'].ljust(30, '\x00')[:30].encode('utf-8')
                 user_record[self.OFFSET_USER_LOGIN:self.OFFSET_USER_LOGIN + 30] = login_bytes
                 user_record[self.OFFSET_USER_UID] = user['uid']
                 user_record[self.OFFSET_USER_GID] = user['gid']
                 password_hash = user['password_hash']
                 if isinstance(password_hash, str):
-                    password_hash = password_hash.encode('ascii')
+                    password_hash = password_hash.encode('utf-8')
                 user_record[self.OFFSET_USER_PASSWORD:self.OFFSET_USER_PASSWORD + self.PASSWORD_SIZE] = password_hash.ljust(self.PASSWORD_SIZE, b'\x00')[:self.PASSWORD_SIZE]
                 data.extend(user_record)
 
@@ -331,7 +323,7 @@ class FAT32Formatter:
             print(f"Ошибка записи users file: {e}")
 
     def read_groups_file(self) -> list:
-        """Чтение файла групп - НОВАЯ ФУНКЦИЯ"""
+        """Чтение файла групп"""
         try:
             data = self.read_file("groups")
             if not data:
@@ -346,7 +338,7 @@ class FAT32Formatter:
                 group_data = data[i:i + self.GROUP_RECORD_SIZE]
 
                 gid = group_data[self.OFFSET_GROUP_GID]
-                name = group_data[self.OFFSET_GROUP_NAME:self.OFFSET_GROUP_NAME + 31].decode('ascii', errors='ignore').rstrip('\x00')
+                name = group_data[self.OFFSET_GROUP_NAME:self.OFFSET_GROUP_NAME + 31].decode('utf-8', errors='ignore').rstrip('\x00')
 
                 if name:
                     groups.append({
@@ -388,7 +380,7 @@ class FAT32Formatter:
         return True
 
     def add_group(self, group_name: str, gid: int = None) -> bool:
-        """Добавление новой группы - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
+        """Добавление новой группы"""
         try:
             groups = self.read_groups_file()
 
@@ -408,7 +400,7 @@ class FAT32Formatter:
             # Создаем запись группы
             group_data = bytearray()
             group_data.append(gid)  # смещение 0
-            group_data.extend(group_name.ljust(31, '\x00')[:31].encode('ascii'))  # смещение 1-31
+            group_data.extend(group_name.ljust(31, '\x00')[:31].encode('utf-8'))  # смещение 1-31
 
             # Добавляем к существующим данным
             existing_data = self.read_file("groups")
@@ -485,10 +477,9 @@ class FAT32Formatter:
                     if first_byte == 0xE5:
                         continue
 
-                    filename = entry_data[self.OFFSET_FILENAME:self.OFFSET_FILENAME + 20].decode('ascii', errors='ignore').rstrip('\x00')
+                    filename = entry_data[self.OFFSET_FILENAME:self.OFFSET_ATTRIBUTE].decode('utf-8', errors='ignore').rstrip('\x00')
                     attributes = entry_data[self.OFFSET_ATTRIBUTE]
 
-                    # Извлекаем время и дату
                     create_time = self.unpack_time(entry_data[self.OFFSET_CREATE_TIME:self.OFFSET_CREATE_TIME + 3])
                     modify_time = self.unpack_time(entry_data[self.OFFSET_MODIFY_TIME:self.OFFSET_MODIFY_TIME + 3])
                     modify_date = self.unpack_date(entry_data[self.OFFSET_MODIFY_DATE:self.OFFSET_MODIFY_DATE + 2])
@@ -556,7 +547,7 @@ class FAT32Formatter:
                         append: bool=False, overwrite: bool=False,
                         uid: int=None, gid:int=None, attributes: int = 0x20) -> bool:
         """Запись в файл"""
-        content_bytes: bytearray = content.encode('ascii') if isinstance(content, str) else content
+        content_bytes: bytearray = content.encode('utf-8') if isinstance(content, str) else content
 
         if overwrite:
             # Удаляем и создаем заново
@@ -666,8 +657,8 @@ class FAT32Formatter:
         """Создание структуры записи файла"""
         file_entry = bytearray(self.FILE_RECORD_SIZE)
 
-        name_bytes = filename.ljust(20, '\x00')[:20].encode('ascii')
-        file_entry[self.OFFSET_FILENAME:self.OFFSET_FILENAME + 20] = name_bytes
+        name_bytes = filename.ljust(self.OFFSET_ATTRIBUTE, '\x00')[:self.OFFSET_ATTRIBUTE].encode('utf-8')
+        file_entry[self.OFFSET_FILENAME:self.OFFSET_ATTRIBUTE] = name_bytes
         file_entry[self.OFFSET_ATTRIBUTE] = attributes
 
         now = datetime.now()
@@ -704,7 +695,7 @@ class FAT32Formatter:
                     if first_byte == 0xE5:
                         continue
 
-                    entry_name: str = entry_data[0:20].decode('ascii', errors='ignore').rstrip('\x00')
+                    entry_name: str = entry_data[self.OFFSET_FILENAME:self.OFFSET_ATTRIBUTE].decode('utf-8', errors='ignore').rstrip('\x00')
                     if entry_name == filename:
                         return entry_data if not is_offset_needed else entry_offset
 
@@ -730,7 +721,7 @@ class FAT32Formatter:
     def find_free_cluster(self) -> int:
         """Поиск свободного кластера"""
         with open(self.disk_filename, 'rb'):
-            for cluster in range(self.DATA_START_CLUSTER, self.DATA_START_CLUSTER + 1000):
+            for cluster in range(self.DATA_START_CLUSTER, self.TOTAL_CLUSTERS):
                 if self.is_cluster_free(cluster):
                     return cluster
         return -1
@@ -898,7 +889,7 @@ class FAT32Formatter:
             # Создаем запись группы
             group_data = bytearray(self.GROUP_RECORD_SIZE)
             group_data[self.OFFSET_GROUP_GID] = gid
-            group_data[self.OFFSET_GROUP_NAME:self.OFFSET_GROUP_NAME + 31] = group_name.ljust(31, '\x00')[:31].encode('ascii')
+            group_data[self.OFFSET_GROUP_NAME:self.OFFSET_GROUP_NAME + 31] = group_name.ljust(31, '\x00')[:31].encode('utf-8')
 
             # Добавляем к существующим данным
             existing_data = self.read_file("groups")
@@ -990,7 +981,7 @@ class FAT32Formatter:
 
         with open(self.disk_filename, 'r+b') as disk:
             disk.seek(entry_offset + self.OFFSET_FILENAME)
-            name_bytes = new_filename.ljust(20, '\x00')[:20].encode('ascii')
+            name_bytes = new_filename.ljust(self.OFFSET_ATTRIBUTE, '\x00')[:self.OFFSET_ATTRIBUTE].encode('utf-8')
             disk.write(name_bytes)
 
         return True
