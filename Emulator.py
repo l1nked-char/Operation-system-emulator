@@ -1,9 +1,17 @@
-import os
 import getpass
-import readline
+import sys
+
 from FAT32FS.format_function import FAT32Formatter
 from FAT32FS.permissions import PermissionChecker
+from FAT32FS.config import Config
+import os
 
+
+if os.name == 'nt':
+    use_readline = False
+else:
+    use_readline = True
+    import readline
 
 
 class FAT32Emulator:
@@ -40,10 +48,9 @@ class FAT32Emulator:
                         self.fs.set_password("root", password)
                         print("Пароль успешно установлен!")
 
-                        # Создаем стандартные группы
                         try:
-                            self.fs.add_group("users", 100)
-                            self.fs.add_group("admins", 101)
+                            self.fs.add_group("users", 1)
+                            self.fs.add_group("admins", 2)
                             print("Созданы стандартные группы: users, admins")
                         except Exception as e:
                             print(f"Предупреждение: {e}")
@@ -74,28 +81,28 @@ class FAT32Emulator:
                 for i, user in enumerate(regular_users, 1):
                     print(f"  {i}. {user['login']}")
                 print("  r. Войти как root")
-                print("  n. Создать нового пользователя")
-
+                print("  q. Выйти")
                 while True:
                     choice = input("Выберите пользователя: ").strip().lower()
-
                     if choice == 'r':
                         return self.authenticate_user("root")
-                    elif choice == 'n':
-                        if self.create_new_user_interactive():
-                            continue
-                        else:
-                            continue
                     elif choice.isdigit():
                         idx = int(choice) - 1
                         if 0 <= idx < len(regular_users):
                             selected_user = regular_users[idx]
-                            return self.authenticate_user(selected_user['login'])
-
-                    print("Неверный выбор")
+                            if self.authenticate_user(selected_user['login']):
+                                return True
+                    elif choice == 'q':
+                        return False
+                    else:
+                        print("Неверный выбор")
 
     def authenticate_user(self, username: str):
-        """Аутентификация пользователя"""
+        """Аутентификация пользователя с проверкой блокировки"""
+        if self.fs.is_user_locked(username):
+            print(f"Пользователь {username} заблокирован. Обратитесь к администратору.")
+            return False
+
         attempts = 3
         while attempts > 0:
             password = getpass.getpass(f"Пароль для {username}: ")
@@ -118,46 +125,6 @@ class FAT32Emulator:
                 return False
 
         return False
-
-    def create_new_user_interactive(self):
-        """Интерактивное создание нового пользователя"""
-        print("\nСоздание нового пользователя:")
-
-        while True:
-            username = input("Имя пользователя: ").strip()
-            if not username:
-                print("Имя пользователя не может быть пустым")
-                continue
-
-            if len(username) > 20:
-                print("Имя пользователя слишком длинное (макс. 20 символов)")
-                continue
-
-            users = self.fs.read_users_file()
-            for user in users:
-                if user['login'] == username:
-                    print(f"Пользователь {username} уже существует")
-                    continue
-
-            break
-
-        while True:
-            password = getpass.getpass("Пароль: ")
-            confirm = getpass.getpass("Подтвердите пароль: ")
-
-            if password == confirm:
-                if len(password) >= 4:
-                    try:
-                        self.fs.add_user(username, password)
-                        print(f"Пользователь {username} успешно создан!")
-                        return True
-                    except Exception as e:
-                        print(f"Ошибка создания пользователя: {e}")
-                        return False
-                else:
-                    print("Пароль должен содержать минимум 4 символа")
-            else:
-                print("Пароли не совпадают")
 
     def execute_command(self, command):
         """Выполнение команды"""
@@ -200,6 +167,8 @@ class FAT32Emulator:
             elif cmd == "rm" and args:
                 for filename in args:
                     self.do_rm(filename)
+            elif cmd == "chattr" and len(args) >= 2:
+                self.do_chattr(args[1], args[0])
             elif cmd == "chmod" and len(args) >= 2:
                 self.do_chmod(args[1], args[0])
             elif cmd == "chown" and len(args) >= 2:
@@ -218,16 +187,23 @@ class FAT32Emulator:
                 self.do_groupadd(args)
             elif cmd == "users":
                 self.do_users()
+            elif cmd == "groups":
+                self.do_groups()
             elif cmd == "login":
                 return self.do_login()
             elif cmd == "mv" and len(args) >= 2:
                 self.do_mv(args[0], args[1])
+            elif cmd == "usermod" and len(args) >= 2:
+                self.do_usermod(args)
+            elif cmd == "userlock" and args:
+                self.do_lock_user(args[0])
+            elif cmd == "userunlock" and args:
+                self.do_unlock_user(args[0])
             elif cmd == "exit" or cmd == "quit":
                 return False
             else:
                 print(f"Неизвестная команда: {cmd}")
                 self.show_help()
-
         except Exception as e:
             print(f"Ошибка: {e}")
 
@@ -238,9 +214,6 @@ class FAT32Emulator:
         if not command_parts:
             print("Использование: sudo <команда>")
             return True
-
-        cmd = command_parts[0]
-        args = command_parts[1:]
 
         # Запрашиваем пароль root
         password = getpass.getpass("[sudo] пароль для root: ")
@@ -317,13 +290,15 @@ class FAT32Emulator:
             print(f"Ошибка создания группы: {e}")
 
     def do_mv(self, old_filename: str, new_filename: str) -> None:
-        """Команда mv - переименование файла"""
+        """Команда mv - переименование файла с проверкой атрибутов и прав"""
         file_entry = self.fs.find_file_entry(old_filename)
         if not file_entry:
             raise FileNotFoundError(f"Файл не найден: {old_filename}")
 
-        file_uid = file_entry[self.fs.OFFSET_UID]
-        if self.current_uid != file_uid and self.current_uid != 0 and not self.sudo_mode:
+        # Проверяем атрибуты и права на переименование
+        if not PermissionChecker.check_file_permission(
+            self.fs, old_filename, self.current_uid, self.current_gid, 'rename'
+        ):
             raise PermissionError("Недостаточно прав для переименования файла")
 
         try:
@@ -333,17 +308,33 @@ class FAT32Emulator:
             print(f"Ошибка переименования файла: {e}")
 
     def do_users(self):
-        """Команда users - список пользователей"""
+        """Команда users - список пользователей с информацией о блокировке"""
         users = self.fs.read_users_file()
 
         print("Список пользователей:")
-        print("{:<20} {:<8} {:<8}".format("Имя", "UID", "GID"))
-        print("-" * 40)
+        print("{:<20} {:<8} {:<8} {:<10}".format("Имя", "UID", "GID", "Статус"))
+        print("-" * 50)
 
         for user in users:
-            print("{:<20} {:<8} {:<8}".format(
-                user['login'], user['uid'], user['gid']
+            status = "Заблокирован" if self.fs.is_user_locked(user['login']) else "Активен"
+            print("{:<20} {:<8} {:<8} {:<10}".format(
+                user['login'], user['uid'], user['gid'], status
             ))
+
+    def do_groups(self):
+        """Команда groups - вывод списка всех групп"""
+        groups = self.fs.read_groups_file()
+
+        if not groups:
+            print("Группы не найдены")
+            return
+
+        print("Список групп:")
+        print("{:<8} {:<20}".format("GID", "Имя группы"))
+        print("-" * 30)
+
+        for group in groups:
+            print("{:<8} {:<20}".format(group['gid'], group['name']))
 
     def do_login(self):
         """Команда login - смена пользователя"""
@@ -362,39 +353,57 @@ class FAT32Emulator:
             return False
 
     def do_ls(self):
-        """Команда ls - список файлов"""
+        """Команда ls - список файлов с учетом скрытых атрибутов"""
         files = self.fs.list_directory()
         users = self.fs.read_users_file()
+        groups = self.fs.read_groups_file()
 
         print("Содержимое корневой директории:")
-        print("{:<20} {:<8} {:<8} {:<10} {:<12} {:<10} {:<8}".format(
-            "Имя", "Размер", "Владелец", "Права", "Дата", "Время", "Attrs"
+        print("{:<20} {:<8} {:<8} {:<8} {:<10} {:<12} {:<10} {:<8}".format(
+            "Имя", "Размер", "Владелец", "Группа", "Права", "Дата", "Время", "Attrs"
         ))
-        print("-" * 88)
+        print("-" * 100)
 
         if not files:
             print("Директория пуста")
             return
 
+        visible_files = 0
         for file_info in files:
+            if PermissionChecker.is_file_system(file_info["attributes"]):
+                continue
+            if PermissionChecker.is_file_hidden(file_info["attributes"], self.current_uid):
+                continue
+
             owner_name = '?'
             for user in users:
                 if user["uid"] == file_info["uid"]:
                     owner_name = user["login"]
                     break
 
+            group_name = '?'
+            for group in groups:
+                if group["gid"] == file_info["gid"]:
+                    group_name = group["name"]
+                    break
+
             perm_str = self.fs.format_permissions(file_info['permissions'])
             attr_str = self.format_attributes(file_info['attributes'])
 
-            print("{:<20} {:<8} {:<8} {:<10} {:<12} {:<10} {:<8}".format(
+            print("{:<20} {:<8} {:<8} {:<8} {:<10} {:<12} {:<10} {:<8}".format(
                 file_info['name'],
                 file_info['size'],
                 owner_name,
+                group_name,
                 perm_str,
                 file_info['modify_date'],
                 file_info['modify_time'],
                 attr_str
             ))
+            visible_files += 1
+
+        if visible_files == 0:
+            print("Директория пуста или все файлы скрыты")
 
     def do_chown(self, filename: str, owner_str: str) -> None:
         """Команда chown - изменение владельца"""
@@ -431,11 +440,11 @@ class FAT32Emulator:
                 else:
                     groups_data = self.fs.read_file("groups")
                     new_gid = None
-                    for i in range(0, len(groups_data), 32):
-                        group_entry = groups_data[i:i + 32]
-                        if len(group_entry) >= 32:
-                            gid = group_entry[0]
-                            group_name = group_entry[1:32].decode('utf-8', errors='ignore').rstrip('\x00')
+                    for i in range(0, len(groups_data), Config.GROUP_RECORD_SIZE):
+                        group_entry = groups_data[i:i + Config.GROUP_RECORD_SIZE]
+                        if len(group_entry) >= Config.GROUP_RECORD_SIZE:
+                            gid = group_entry[Config.OFFSET_GROUP_GID]
+                            group_name = group_entry[Config.OFFSET_GROUP_NAME:Config.GROUP_RECORD_SIZE].decode('utf-8', errors='ignore').rstrip('\x00')
                             if group_name == group_part:
                                 new_gid = gid
                                 break
@@ -446,7 +455,7 @@ class FAT32Emulator:
             if new_gid is None:
                 file_entry = self.fs.find_file_entry(filename)
                 if file_entry:
-                    new_gid = file_entry[30]
+                    new_gid = file_entry[Config.OFFSET_GID]
 
             self.fs.change_owner(filename, new_uid, new_gid)
             print(f"Владелец {filename} изменен на UID:{new_uid}, GID:{new_gid}")
@@ -460,15 +469,23 @@ class FAT32Emulator:
         print(f"Создан файл: {filename}")
 
     def do_cat(self, filename):
-        """Команда cat - чтение файла с проверкой прав"""
-        # Проверяем право на чтение
+        """Команда cat - чтение файла с проверкой атрибутов и прав"""
+        # Проверяем атрибуты и права на чтение
         if not PermissionChecker.check_file_permission(
                 self.fs, filename, self.current_uid, self.current_gid, 'read'
         ):
             raise PermissionError("Недостаточно прав для чтения файла")
 
         data = self.fs.read_file(filename)
-        print(data.decode('utf-8', errors='ignore'))
+        if data:
+            i = 0
+            while len(data) > i:
+                sys.stdout.write(data[i: min(len(data), i + Config.CLUSTER_SIZE)].decode('utf-8', errors='ignore'))
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                i += Config.CLUSTER_SIZE
+        else:
+            print("")
 
     def do_cat_write(self, filename, append=False):
         """Команда cat > filename - многострочная запись в файл с проверкой прав"""
@@ -497,44 +514,107 @@ class FAT32Emulator:
 
         if content_lines:
             content = "\n".join(content_lines)
-            self.fs.write_file(filename, content, append=append,
-                               uid=self.current_uid, gid=self.current_gid)
+            self.fs.write_file(filename, content, append=append)
             print(f"Содержимое записано в файл: {filename}")
         else:
             print("Файл оставлен пустым")
 
     def do_echo(self, content: str, filename: str, append: bool = False) -> None:
-        """Команда echo - запись в файл с проверкой прав"""
-        # Проверяем право на запись (если файл существует)
-        file_entry = self.fs.find_file_entry(filename)
-        if file_entry:
-            if not PermissionChecker.check_file_permission(
-                self.fs, filename, self.current_uid, self.current_gid, 'write'
-            ):
-                raise PermissionError("Недостаточно прав для записи в файл")
+        """Команда echo - запись в файл с проверкой атрибутов и прав"""
+        # Проверяем атрибуты и права на запись
+        if not PermissionChecker.check_file_permission(
+            self.fs, filename, self.current_uid, self.current_gid, 'write'
+        ):
+            raise PermissionError("Недостаточно прав для записи в файл")
 
-        self.fs.write_file(filename, content, append=append,
-                           uid=self.current_uid, gid=self.current_gid)
+        self.fs.write_file(filename, content, append=append)
         mode = "дописан в" if append else "записан в"
         print(f"Текст {mode} файл: {filename}")
 
     def do_rm(self, filename: str) -> None:
-        """Команда rm - удаление файла с проверкой прав"""
+        """Команда rm - удаление файла с проверкой атрибутов и прав"""
         file_entry = self.fs.find_file_entry(filename)
         if not file_entry:
             raise FileNotFoundError(f"Файл не найден: {filename}")
 
-        # Проверяем права: владелец или root может удалять
-        file_uid = file_entry[29]
-        if self.current_uid != file_uid and self.current_uid != 0 and not self.sudo_mode:
-            raise PermissionError("Недостаточно прав для удаления файла")
-
-        # Дополнительная проверка: право на запись в файл
-        if not PermissionChecker.check_write_permission(file_entry, self.current_uid, self.current_gid):
+        # Проверяем атрибуты и права на удаление
+        if not PermissionChecker.check_file_permission(
+            self.fs, filename, self.current_uid, self.current_gid, 'delete'
+        ):
             raise PermissionError("Недостаточно прав для удаления файла")
 
         self.fs.delete_file(filename)
         print(f"Удален файл: {filename}")
+
+    def do_chattr(self, filename: str, attr_str: str) -> None:
+        """Команда chattr - изменение атрибутов файла"""
+        if self.current_uid != 0 and not self.sudo_mode:
+            print("Ошибка: недостаточно прав. Только root может изменять атрибуты.")
+            return
+
+        file_entry = self.fs.find_file_entry(filename)
+        if not file_entry:
+            raise FileNotFoundError(f"Файл не найден: {filename}")
+
+        if len(attr_str) < 2:
+            print("Ошибка: неверный формат атрибутов")
+            self.show_chattr_help()
+            return
+
+        current_attrs = file_entry[Config.OFFSET_ATTRIBUTE]
+        new_attrs = current_attrs
+
+        i = 0
+        while i < len(attr_str):
+            if attr_str[i] not in ['+', '-']:
+                print(f"Ошибка: ожидался '+' или '-' в позиции {i}")
+                self.show_chattr_help()
+                return
+
+            operation = attr_str[i]
+            i += 1
+
+            # Обрабатываем все атрибуты до следующей операции или конца строки
+            while i < len(attr_str) and attr_str[i] not in ['+', '-']:
+                attr_char = attr_str[i]
+                if attr_char == 's':
+                    bit = Config.ATTR_SYSTEM
+                elif attr_char == 'h':
+                    bit = Config.ATTR_HIDDEN
+                elif attr_char == 'r':
+                    bit = Config.ATTR_READ_ONLY
+                else:
+                    print(f"Неизвестный атрибут: {attr_char}")
+                    self.show_chattr_help()
+                    return
+
+                if operation == '+':
+                    new_attrs |= bit
+                else:
+                    new_attrs &= ~bit
+
+                i += 1
+
+        try:
+            self.fs.change_attributes(filename, new_attrs)
+            print(f"Атрибуты файла {filename} изменены: {self.format_attributes(new_attrs)}")
+        except Exception as e:
+            print(f"Ошибка изменения атрибутов: {e}")
+
+    @staticmethod
+    def show_chattr_help():
+        """Показать справку по команде chattr"""
+        print("Использование: chattr [+-][rsh][+-][rsh]... <файл>")
+        print("  + - установить атрибут")
+        print("  - - снять атрибут")
+        print("  r - read-only (только чтение)")
+        print("  h - hidden (скрытый)")
+        print("  s - system (системный)")
+        print("Примеры:")
+        print("  chattr +r file.txt  - установить read-only")
+        print("  chattr -h file.txt  - снять hidden")
+        print("  chattr +r+h file.txt - установить read-only и hidden")
+        print("  chattr -r+s file.txt - снять read-only и установить system")
 
     def do_chmod(self, filename: str, mode_str: str) -> None:
         """Команда chmod - изменение прав доступа с проверкой прав"""
@@ -543,7 +623,7 @@ class FAT32Emulator:
             raise FileNotFoundError(f"Файл не найден: {filename}")
 
         # Проверяем права: владелец или root может менять права
-        file_uid = file_entry[29]
+        file_uid = file_entry[Config.OFFSET_UID]
         if self.current_uid != file_uid and self.current_uid != 0 and not self.sudo_mode:
             raise PermissionError("Недостаточно прав для изменения прав доступа")
 
@@ -564,19 +644,29 @@ class FAT32Emulator:
 
     @staticmethod
     def format_attributes(attributes: int) -> str:
-        """Форматирование атрибутов файла в строку"""
+        """Форматирование атрибутов файла в строку (без битовых операций)"""
+        temp_attrs = attributes
         attr_str = ''
-        if attributes & FAT32Formatter.ATTR_READ_ONLY:
-            attr_str += 'R'
-        if attributes & FAT32Formatter.ATTR_HIDDEN:
-            attr_str += 'H'
-        if attributes & FAT32Formatter.ATTR_SYSTEM:
+
+        if temp_attrs >= Config.ATTR_SYSTEM:
             attr_str += 'S'
-        # if attributes & FAT32Formatter.ATTR_DIRECTORY:
-        #     attr_str += 'D'
-        # if attributes & FAT32Formatter.ATTR_ARCHIVE:
-        #     attr_str += 'A'
-        return attr_str.ljust(5, '-')
+            temp_attrs -= Config.ATTR_SYSTEM
+        else:
+            attr_str += '-'
+
+        if temp_attrs >= Config.ATTR_HIDDEN:
+            attr_str += 'H'
+            temp_attrs -= Config.ATTR_HIDDEN
+        else:
+            attr_str += '-'
+
+        if temp_attrs % 2 == 1:
+            attr_str += 'R'
+            temp_attrs -= Config.ATTR_READ_ONLY
+        else:
+            attr_str += '-'
+
+        return attr_str
 
     @staticmethod
     def do_clear():
@@ -618,6 +708,57 @@ class FAT32Emulator:
             else:
                 print("Пароли не совпадают")
 
+    def do_usermod(self, args):
+        """Команда usermod - изменение параметров пользователя"""
+        if self.current_uid != 0 and not self.sudo_mode:
+            print("Ошибка: недостаточно прав. Только root может изменять параметры пользователей.")
+            return
+
+        if len(args) < 3 or args[0] != "-g":
+            print("Использование: usermod -g <gid> <username>")
+            return
+
+        try:
+            new_gid = int(args[1])
+            username = args[2]
+
+            if self.fs.change_user_group(self.current_uid, username, new_gid):
+                print(f"Основная группа пользователя {username} изменена на {new_gid}")
+            else:
+                print(f"Не удалось изменить группу пользователя {username}")
+        except ValueError:
+            print("Ошибка: GID должен быть числом")
+        except Exception as e:
+            print(f"Ошибка: {e}")
+
+    def do_lock_user(self, username: str):
+        """Команда userlock - блокировка пользователя"""
+        if self.current_uid != 0 and not self.sudo_mode:
+            print("Ошибка: недостаточно прав. Только root может блокировать пользователей.")
+            return
+
+        try:
+            if self.fs.lock_user(self.current_uid, username):
+                print(f"Пользователь {username} заблокирован")
+            else:
+                print(f"Не удалось заблокировать пользователя {username}")
+        except Exception as e:
+            print(f"Ошибка: {e}")
+
+    def do_unlock_user(self, username: str):
+        """Команда userunlock - разблокировка пользователя"""
+        if self.current_uid != 0 and not self.sudo_mode:
+            print("Ошибка: недостаточно прав. Только root может разблокировать пользователей.")
+            return
+
+        try:
+            if self.fs.unlock_user(self.current_uid, username):
+                print(f"Пользователь {username} разблокирован")
+            else:
+                print(f"Не удалось разблокировать пользователя {username}")
+        except Exception as e:
+            print(f"Ошибка: {e}")
+
     @staticmethod
     def show_help():
         """Показать справку по командам"""
@@ -629,6 +770,9 @@ class FAT32Emulator:
         print("  echo <text> >> <file> - добавить текст в файл")
         print("  rm <file>             - удалить файл")
         print("  chmod <mode> <file>   - изменить права доступа")
+        print("  chattr [+-][rsh] <file> - изменить атрибуты файла (только root)")
+        print("                         '+' - установить, '-' - снять")
+        print("                         r-readonly, h-hidden, s-system")
         print("  chown <owner> <file>  - изменить владельца (user[:group])")
         print("  df                    - информация о диске")
         print("  whoami                - информация о текущем пользователе")
@@ -636,15 +780,18 @@ class FAT32Emulator:
         print("  useradd <user>        - добавить пользователя (только root)")
         print("  groupadd <group>      - добавить группу (только root)")
         print("  users                 - список пользователей")
+        print("  groups                - список групп")
         print("  login                 - сменить пользователя")
         print("  mv <old_file> <new_file> - переименовать файл")
+        print("  usermod -g <gid> <user> - изменить группу пользователя (только root)")
+        print("  userlock <user>       - заблокировать пользователя (только root)")
+        print("  userunlock <user>     - разблокировать пользователя (только root)")
         print("  sudo <command>        - выполнить команду как root")
         print("  clear                 - очистить экран")
         print("  exit/quit             - выход")
 
 
 def main():
-    """Главная функция эмулятора"""
     print("Эмулятор FAT32 файловой системы")
     print("=" * 50)
 
@@ -653,35 +800,35 @@ def main():
     formatter = FAT32Formatter(disk_file, "MYVOLUME", disk_size_gb=1)
     emulator = FAT32Emulator(disk_file, formatter)
 
-    readline.set_history_length(1000)
-    readline.parse_and_bind('tab: complete')
+    if use_readline:
+        readline.set_history_length(1000)
+        readline.parse_and_bind('tab: complete')
+        readline.redisplay()
+    try:
+        if not emulator.authenticate():
+            print("Аутентификация не пройдена. Выход.")
+            return
 
-    # Проходим аутентификацию
-    if not emulator.authenticate():
-        print("Аутентификация не пройдена. Выход.")
-        return
+        print(f"\nДобро пожаловать, {emulator.current_user}!")
+        print("Введите 'help' для списка команд\n")
 
-    print(f"\nДобро пожаловать, {emulator.current_user}!")
-    print("Введите 'help' для списка команд\n")
+        while True:
+                prompt = f'{emulator.current_user}@fat32emulator:~$ '
+                command = input(prompt).strip()
+                command = command.lower()
 
-    # Основной цикл команд
-    while True:
-        try:
-            #prompt = emulator.get_prompt()
-            command = input(f"{emulator.current_user}@myfs:~$ ").strip().lower()
+                if command == "help":
+                    emulator.show_help()
+                    continue
 
-            if command == "help":
-                emulator.show_help()
-                continue
+                if not emulator.execute_command(command):
+                    break
 
-            if not emulator.execute_command(command):
-                break
+    except KeyboardInterrupt:
+        print("\nВыход из эмулятора")
 
-        except KeyboardInterrupt:
-            print("\nВыход из эмулятора")
-            break
-        except Exception as e:
-            print(f"Критическая ошибка: {e}")
+    except Exception as e:
+        print(f"Критическая ошибка: {e}")
 
 
 if __name__ == "__main__":
