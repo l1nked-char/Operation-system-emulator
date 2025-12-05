@@ -1,4 +1,5 @@
 .idea/
 FAT32FS/__pycache__/
+SchedulerEmulator/__pycache__/
 
 my_disk.bin
