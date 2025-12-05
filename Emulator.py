@@ -370,7 +370,7 @@ class FAT32Emulator:
 
         visible_files = 0
         for file_info in files:
-            if PermissionChecker.is_file_system(file_info["attributes"]):
+            if PermissionChecker.is_file_system(file_info["attributes"], self.current_uid):
                 continue
             if PermissionChecker.is_file_hidden(file_info["attributes"], self.current_uid):
                 continue

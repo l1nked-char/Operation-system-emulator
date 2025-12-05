@@ -20,7 +20,7 @@ class PermissionChecker:
         if has_read_only:
             temp_attrs -= Config.ATTR_READ_ONLY
 
-        if has_system:
+        if has_system and not is_root:
             return False
 
         if has_read_only:
@@ -132,6 +132,6 @@ class PermissionChecker:
         return temp_attrs >= Config.ATTR_HIDDEN
 
     @staticmethod
-    def is_file_system(attributes):
+    def is_file_system(attributes, current_uid):
         """Проверка, является ли файл скрытым для текущего пользователя"""
-        return attributes >= Config.ATTR_SYSTEM
+        return attributes >= Config.ATTR_SYSTEM and current_uid != 0
